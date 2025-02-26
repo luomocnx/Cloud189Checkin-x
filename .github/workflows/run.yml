@@ -11,9 +11,9 @@ on:
     - cron: '0 3,21 * * *'
 
 jobs:
-  build-and-deploy-use1:
+  build-and-deploy-user1:
     runs-on: ubuntu-latest
-    environment: use1
+    environment: user1
     steps:
       - uses: actions/checkout@main
 
