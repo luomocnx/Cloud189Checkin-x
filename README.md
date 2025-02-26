@@ -158,8 +158,4 @@ ql repo https://github.com/Aijiaobin/Cloud189Checkin.git "src|.env" "image" "src
 - 原项目：[wes-lin/Cloud189Checkin](https://github.com/wes-lin/Cloud189Checkin)  
 - README优化：[ShelbyAlan](https://github.com/ShelbyAlan) 💡  
 
-## 交流群
-
-![](https://cdn.jsdelivr.net/gh/wes-lin/Cloud189Checkin/image/group.jpg)
-
 ## [更新内容](https://github.com/wes-lin/Cloud189Checkin/wiki/更新内容)
