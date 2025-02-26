@@ -198,7 +198,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
       finalMessage || '⚠️ 无法计算实际容量变化',
     ].join('\n\n');
 
-    sendNotify('天翼云压力测试报告', finalReport);
+    sendNotify('天翼云盘签到报告', finalReport);
     logger.debug(`📊 测试结果:\n${finalReport}`);
   } catch (e) {
     logger.error('致命错误:', e.message);
