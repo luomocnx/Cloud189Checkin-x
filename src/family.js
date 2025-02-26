@@ -5,8 +5,10 @@ require('dotenv').config();
 const log4js = require('log4js');
 const { CloudClient } = require('cloud189-sdk');
 const { sendNotify } = require('./sendNotify');
+
 // 新增环境变量处理（在日志配置之前）
 const EXEC_THRESHOLD = parseInt(process.env.EXEC_THRESHOLD || 1); // 默认值为1
+
 // 日志配置
 log4js.configure({
   appenders: {
@@ -36,11 +38,11 @@ function timeout(promise, ms) {
 }
 
 // 核心签到逻辑
-async function stressTest(account, familyId, personalCount = 10, familyCount = 10) {
-  let personalTotal = 0; let
-    familyTotal = 0;
-  let actualPersonal = 0; let
-    actualFamily = 0;
+async function stressTest(account, familyId, personalCount = 10, familyCount = 10, isMainAccount = false) {
+  let personalTotal = 0;
+  let familyTotal = 0;
+  let actualPersonal = 0;
+  let actualFamily = 0;
   const report = [];
 
   try {
@@ -48,10 +50,12 @@ async function stressTest(account, familyId, personalCount = 10, familyCount = 1
 
     const client = new CloudClient(account.userName, account.password);
     await client.login().catch(() => { throw new Error('登录失败'); });
+
     // 获取初始容量信息
     const userSizeInfo = await client.getUserSizeInfo().catch(() => null);
-    // 个人签到10连击（新增30秒超时）
-    const personalPromises = Array(personalCount).fill().map(() => timeout(client.userSign(), 30000) // 30秒超时控制
+
+    // 个人签到
+    const personalPromises = Array(personalCount).fill().map(() => timeout(client.userSign(), 30000)
       .then((res) => {
         const mb = res.netdiskBonus;
         logger.debug(`[${Date.now()}] 🎯 个人签到 ✅ 获得: ${mb}MB`);
@@ -66,8 +70,8 @@ async function stressTest(account, familyId, personalCount = 10, familyCount = 1
     personalTotal = personalResults.reduce((sum, r) => sum + r.value, 0);
     report.push(`🎯 个人签到完成 累计获得: ${personalTotal}MB`);
 
-    // 家庭签到10连击（新增30秒超时）
-    const familyPromises = Array(familyCount).fill().map(() => timeout(client.familyUserSign(familyId), 30000) // 30秒超时控制
+    // 家庭签到
+    const familyPromises = Array(familyCount).fill().map(() => timeout(client.familyUserSign(familyId), 30000)
       .then((res) => {
         const mb = res.bonusSpace;
         logger.debug(`[${Date.now()}] 🏠 家庭签到 ✅ 获得: ${mb}MB`);
@@ -81,6 +85,7 @@ async function stressTest(account, familyId, personalCount = 10, familyCount = 1
     const familyResults = await Promise.allSettled(familyPromises);
     familyTotal = familyResults.reduce((sum, r) => sum + r.value, 0);
     report.push(`🏠 家庭签到完成 本次获得: ${familyTotal}MB`);
+
     // 获取签到后容量信息
     const afterUserSizeInfo = await client.getUserSizeInfo().catch(() => null);
 
@@ -92,13 +97,25 @@ async function stressTest(account, familyId, personalCount = 10, familyCount = 1
     } else {
       report.push(`⚠️ 容量信息获取失败，无法计算实际变化`);
     }
-    return {
-      success: true,
-      personalTotal,
-      familyTotal,
-      actualFamily,
-      report: `账号 ${mask(account.userName)}\n${report.join('\n')}`,
-    };
+
+    // 返回完整报告或简化报告
+    if (isMainAccount) {
+      return {
+        success: true,
+        personalTotal,
+        familyTotal,
+        actualFamily,
+        report: `账号 ${mask(account.userName)}\n${report.join('\n')}`,
+      };
+    } else {
+      return {
+        success: true,
+        personalTotal,
+        familyTotal,
+        actualFamily,
+        report: `账号 ${mask(account.userName)}\n${report.join('\n')}`,
+      };
+    }
   } catch (e) {
     return {
       success: false,
@@ -116,92 +133,65 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // 修改后的执行测试
 (async () => {
   try {
-    logger.debug('🔥 启动专项压力测试');
     const accounts = require('./accounts');
     const familyId = process.env.FAMILYID;
 
     if (!familyId) throw new Error('未配置环境变量 FAMILYID');
 
-    // 新增：在主作用域声明变量
     let mainAccountClient = null;
     let initialSizeInfo = null;
-    let finalSizeInfo = null;
 
-    // 仅当存在账号时初始化主账号
     if (accounts.length > 0) {
-      const mainAccount = accounts[0];
-      mainAccountClient = new CloudClient(mainAccount.userName, mainAccount.password);
-      await mainAccountClient.login().catch((e) => {
-        throw new Error(`主账号登录失败: ${e.message}`);
-      });
-      initialSizeInfo = await mainAccountClient.getUserSizeInfo().catch(() => null);
-      if (!initialSizeInfo) throw new Error('无法获取初始容量信息');
+      mainAccountClient = new CloudClient(accounts[0].userName, accounts[0].password);
+      await mainAccountClient.login();
+      initialSizeInfo = await mainAccountClient.getUserSizeInfo();
       logger.debug(`🏠 初始家庭容量: ${initialSizeInfo.familyCapacityInfo.totalSize} Bytes`);
     }
-    let totalFamily = 0;
-    let totalActualFamily = 0;
+
     const reports = [];
+    let totalFamily = 0;
 
-    for (let index = 0; index < accounts.length; index++) {
-      const account = accounts[index];
-      if (!account.userName || !account.password) {
-        logger.error(`账号配置错误: accounts[${index}]`);
-        continue;
-      }
-      // 新增签到次数控制逻辑
-      let personalCount = 10;
-      let familyCount = 10;
+    for (let i = 0; i < accounts.length; i++) {
+      const account = accounts[i];
+      const isMainAccount = i === 0;
+      const personalCount = isMainAccount ? 1 : 0;
+      const familyCount = isMainAccount ? 1 : 10;
 
-      if (EXEC_THRESHOLD === 1) {
-        if (index === 0) { // 第一个账号
-          personalCount = 1;
-          familyCount = 1;
-        } else { // 其他账号
-          personalCount = 0;
-          familyCount = 10;
-        }
-      } else { // 其他账号
-        personalCount = EXEC_THRESHOLD;
-        familyCount = EXEC_THRESHOLD;
-      }// 若 EXEC_THRESHOLD=0 保持默认值10
       const result = await stressTest(
         { userName: account.userName, password: account.password },
         familyId,
         personalCount,
         familyCount,
+        isMainAccount
       );
 
-      reports.push(result.report);
-
-      if (result.success) {
-        totalFamily += result.familyTotal;
-        totalActualFamily += result.actualFamily;
+      // 如果是主账号，直接添加完整报告
+      if (isMainAccount) {
+        reports.push(result.report);
+      } else {
+        // 如果是副账号，去掉报告末尾的换行符
+        reports.push(result.report.trim());
       }
 
-      if (accounts.length > 1 && index < accounts.length - 1) {
-        await sleep(5000);
-      }
-    }
-    // 最终容量统计（确保主账号客户端存在）
-    if (mainAccountClient) {
-      finalSizeInfo = await mainAccountClient.getUserSizeInfo().catch(() => null);
-      if (finalSizeInfo) {
-        logger.debug(`🏠 最终家庭容量: ${finalSizeInfo.familyCapacityInfo.totalSize} Bytes`);
-        const actualFamilyTotal = (finalSizeInfo.familyCapacityInfo.totalSize - initialSizeInfo.familyCapacityInfo.totalSize) / 1024 / 1024;
-        var finalMessage = `📈 实际家庭容量总增加: ${actualFamilyTotal.toFixed(2)}MB\n⏱️ 执行耗时: ${benchmark.lap()}`;
-      }
+      if (result.success) totalFamily += result.familyTotal;
     }
 
-    const finalReport = [
-      reports.join('\n\n'),
+    const finalSizeInfo = await mainAccountClient.getUserSizeInfo();
+    const actualFamilyTotal = (finalSizeInfo.familyCapacityInfo.totalSize - initialSizeInfo.familyCapacityInfo.totalSize) / 1024 / 1024;
+
+    // 构造统计信息
+    const summary = [
       `🏠 所有家庭签到累计获得: ${totalFamily}MB`,
-      finalMessage || '⚠️ 无法计算实际容量变化',
-    ].join('\n\n');
+      `📈 实际家庭容量总增加: ${actualFamilyTotal.toFixed(2)}MB`,
+      `⏱️ 执行耗时: ${benchmark.lap()}`
+    ].join('\n');
 
-    sendNotify('天翼云盘签到报告', finalReport);
-    logger.debug(`📊 测试结果:\n${finalReport}`);
+    // 构造完整报告（统计信息在最前面）
+    const finalReport = [summary, ...reports].join('\n\n');
+
+    // 推送完整报告
+    sendNotify('', finalReport);
   } catch (e) {
     logger.error('致命错误:', e.message);
-    process.exit(1);
   }
 })();
