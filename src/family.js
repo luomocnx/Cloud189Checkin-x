@@ -6,8 +6,9 @@ const log4js = require('log4js');
 const { CloudClient } = require('cloud189-sdk');
 const { sendNotify } = require('./sendNotify');
 
-// 新增环境变量处理（在日志配置之前）
-const EXEC_THRESHOLD = parseInt(process.env.EXEC_THRESHOLD || 1); // 默认值为1
+// 环境变量配置
+const EXEC_THRESHOLD = parseInt(process.env.EXEC_THRESHOLD || 1);
+const FAMILYID = process.env.FAMILYID;
 
 // 日志配置
 log4js.configure({
@@ -21,7 +22,7 @@ log4js.configure({
 });
 const logger = log4js.getLogger();
 
-// 调试工具
+// 工具函数
 const benchmark = {
   start: Date.now(),
   lap() {
@@ -29,7 +30,6 @@ const benchmark = {
   },
 };
 
-// 新增工具函数：带超时的 Promise
 function timeout(promise, ms) {
   return Promise.race([
     promise,
@@ -37,8 +37,14 @@ function timeout(promise, ms) {
   ]);
 }
 
+function mask(s) {
+  return s.replace(/(\d{3})\d+(\d{4})/, '$1****$2');
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 // 核心签到逻辑
-async function stressTest(account, familyId, personalCount = 10, familyCount = 10, isMainAccount = false) {
+async function stressTest(account, familyId, personalCount = 10, familyCount = 10) {
   let personalTotal = 0;
   let familyTotal = 0;
   let actualPersonal = 0;
@@ -46,152 +52,157 @@ async function stressTest(account, familyId, personalCount = 10, familyCount = 1
   const report = [];
 
   try {
-    logger.debug(`🚦 开始压力测试 (账号: ${mask(account.userName)})`);
-
     const client = new CloudClient(account.userName, account.password);
     await client.login().catch(() => { throw new Error('登录失败'); });
 
-    // 获取初始容量信息
     const userSizeInfo = await client.getUserSizeInfo().catch(() => null);
 
     // 个人签到
-    const personalPromises = Array(personalCount).fill().map(() => timeout(client.userSign(), 30000)
-      .then((res) => {
-        const mb = res.netdiskBonus;
-        logger.debug(`[${Date.now()}] 🎯 个人签到 ✅ 获得: ${mb}MB`);
-        return mb;
-      })
-      .catch((err) => {
-        const message = err.message.includes('超时') ? `请求超时（30秒）` : err.message;
-        report.push(`[${Date.now()}] 🎯 个人签到 ❌ 获得: 0MB (原因: ${message})`);
-        return 0;
-      }));
+    const personalPromises = Array(personalCount).fill().map(() => 
+      timeout(client.userSign(), 30000)
+        .then((res) => {
+          report.push(`[个人签到] 获得 ${res.netdiskBonus}MB`);
+          return res.netdiskBonus;
+        })
+        .catch((err) => {
+          report.push(`[个人签到] 失败: ${err.message.includes('超时') ? '请求超时' : err.message}`);
+          return 0;
+        }));
     const personalResults = await Promise.allSettled(personalPromises);
     personalTotal = personalResults.reduce((sum, r) => sum + r.value, 0);
-    report.push(`🎯 个人签到完成 累计获得: ${personalTotal}MB`);
 
     // 家庭签到
-    const familyPromises = Array(familyCount).fill().map(() => timeout(client.familyUserSign(familyId), 30000)
-      .then((res) => {
-        const mb = res.bonusSpace;
-        logger.debug(`[${Date.now()}] 🏠 家庭签到 ✅ 获得: ${mb}MB`);
-        return mb;
-      })
-      .catch((err) => {
-        const message = err.message.includes('超时') ? `请求超时（30秒）` : err.message;
-        report.push(`[${Date.now()}] 🏠 家庭签到 ❌ 获得: 0MB (原因: ${message})`);
-        return 0;
-      }));
+    const familyPromises = Array(familyCount).fill().map(() =>
+      timeout(client.familyUserSign(familyId), 30000)
+        .then((res) => {
+          report.push(`[家庭签到] 获得 ${res.bonusSpace}MB`);
+          return res.bonusSpace;
+        })
+        .catch((err) => {
+          report.push(`[家庭签到] 失败: ${err.message.includes('超时') ? '请求超时' : err.message}`);
+          return 0;
+        }));
     const familyResults = await Promise.allSettled(familyPromises);
     familyTotal = familyResults.reduce((sum, r) => sum + r.value, 0);
-    report.push(`🏠 家庭签到完成 本次获得: ${familyTotal}MB`);
 
-    // 获取签到后容量信息
+    // 容量计算
     const afterUserSizeInfo = await client.getUserSizeInfo().catch(() => null);
-
-    // 计算实际容量变化
     if (userSizeInfo && afterUserSizeInfo) {
       actualPersonal = (afterUserSizeInfo.cloudCapacityInfo.totalSize - userSizeInfo.cloudCapacityInfo.totalSize) / 1024 / 1024;
       actualFamily = (afterUserSizeInfo.familyCapacityInfo.totalSize - userSizeInfo.familyCapacityInfo.totalSize) / 1024 / 1024;
-      report.push(`📊 实际容量变化 | 个人: ${actualPersonal.toFixed(2)}MB | 家庭: ${actualFamily.toFixed(2)}MB`);
-    } else {
-      report.push(`⚠️ 容量信息获取失败，无法计算实际变化`);
     }
 
-    // 返回完整报告或简化报告
-    if (isMainAccount) {
-      return {
-        success: true,
-        personalTotal,
-        familyTotal,
-        actualFamily,
-        report: `账号 ${mask(account.userName)}\n${report.join('\n')}`,
-      };
-    } else {
-      return {
-        success: true,
-        personalTotal,
-        familyTotal,
-        actualFamily,
-        report: `账号 ${mask(account.userName)}\n${report.join('\n')}`,
-      };
-    }
+    return {
+      success: true,
+      personalTotal,
+      familyTotal,
+      actualPersonal,
+      actualFamily,
+      report: report.join('\n')
+    };
   } catch (e) {
     return {
       success: false,
-      report: `❌ ${mask(account.userName)} 签到失败: ${e.message}`,
+      report: `❌ 签到失败: ${e.message}`,
+      personalTotal: 0,
+      familyTotal: 0,
+      actualPersonal: 0,
+      actualFamily: 0
     };
   }
 }
 
-// 辅助方法
-function mask(s) {
-  return s.replace(/(\d{3})\d+(\d{4})/, '$1****$2');
-}
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-// 修改后的执行测试
+// 主执行逻辑
 (async () => {
   try {
+    logger.debug('🔥 启动签到任务');
     const accounts = require('./accounts');
-    const familyId = process.env.FAMILYID;
+    if (!FAMILYID) throw new Error('缺少 FAMILYID 环境变量');
 
-    if (!familyId) throw new Error('未配置环境变量 FAMILYID');
-
+    // 主账号相关变量
     let mainAccountClient = null;
     let initialSizeInfo = null;
-
-    if (accounts.length > 0) {
-      mainAccountClient = new CloudClient(accounts[0].userName, accounts[0].password);
-      await mainAccountClient.login();
-      initialSizeInfo = await mainAccountClient.getUserSizeInfo();
-      logger.debug(`🏠 初始家庭容量: ${initialSizeInfo.familyCapacityInfo.totalSize} Bytes`);
-    }
-
-    const reports = [];
+    let finalSizeInfo = null;
+    let mainAccountFinalSize = { personal: 0, family: 0 };
+    let mainAccountData = {
+      personalAdded: 0,
+      familyAdded: 0,
+      actualPersonal: 0,
+      actualFamily: 0
+    };
+    const otherAccounts = [];
     let totalFamily = 0;
 
-    for (let i = 0; i < accounts.length; i++) {
-      const account = accounts[i];
-      const isMainAccount = i === 0;
-      const personalCount = isMainAccount ? 1 : 0;
-      const familyCount = isMainAccount ? 1 : 10;
-
-      const result = await stressTest(
-        { userName: account.userName, password: account.password },
-        familyId,
-        personalCount,
-        familyCount,
-        isMainAccount
-      );
-
-      // 如果是主账号，直接添加完整报告
-      if (isMainAccount) {
-        reports.push(result.report);
-      } else {
-        // 如果是副账号，去掉报告末尾的换行符
-        reports.push(result.report.trim());
-      }
-
-      if (result.success) totalFamily += result.familyTotal;
+    // 处理主账号
+    if (accounts.length > 0) {
+      const mainAccount = accounts[0];
+      mainAccountClient = new CloudClient(mainAccount.userName, mainAccount.password);
+      await mainAccountClient.login().catch(e => { throw new Error(`主账号登录失败: ${e.message}`); });
+      initialSizeInfo = await mainAccountClient.getUserSizeInfo();
     }
 
-    const finalSizeInfo = await mainAccountClient.getUserSizeInfo();
-    const actualFamilyTotal = (finalSizeInfo.familyCapacityInfo.totalSize - initialSizeInfo.familyCapacityInfo.totalSize) / 1024 / 1024;
+    // 执行签到任务
+    for (let index = 0; index < accounts.length; index++) {
+      const account = accounts[index];
+      const isMainAccount = index === 0;
+      
+      const personalCount = isMainAccount ? 
+        (EXEC_THRESHOLD === 1 ? 1 : EXEC_THRESHOLD) : 0;
+      const familyCount = EXEC_THRESHOLD === 1 ? 1 : EXEC_THRESHOLD;
 
-    // 构造统计信息
-    const summary = [
+      const result = await stressTest(
+        account,
+        FAMILYID,
+        personalCount,
+        familyCount
+      );
+
+      if (isMainAccount) {
+        mainAccountData = {
+          personalAdded: result.personalTotal,
+          familyAdded: result.familyTotal,
+          actualPersonal: result.actualPersonal,
+          actualFamily: result.actualFamily
+        };
+      } else {
+        const familyGain = result.report.match(/\[家庭签到\] 获得 (\d+)MB/)?.[1] || 0;
+        otherAccounts.push(`账号 ${mask(account.userName)} 家庭获得: ${familyGain}MB`);
+      }
+
+      totalFamily += result.familyTotal;
+      if (index < accounts.length - 1) await sleep(5000);
+    }
+
+    // 获取最终容量
+    if (mainAccountClient) {
+      finalSizeInfo = await mainAccountClient.getUserSizeInfo();
+      mainAccountFinalSize = {
+        personal: (finalSizeInfo.cloudCapacityInfo.totalSize / 1024 / 1024).toFixed(2),
+        family: (finalSizeInfo.familyCapacityInfo.totalSize / 1024 / 1024).toFixed(2)
+      };
+    }
+
+    // 构建通知内容
+    const report = [
       `🏠 所有家庭签到累计获得: ${totalFamily}MB`,
-      `📈 实际家庭容量总增加: ${actualFamilyTotal.toFixed(2)}MB`,
-      `⏱️ 执行耗时: ${benchmark.lap()}`
+      `📈 实际家庭容量总增加: ${mainAccountData.actualFamily.toFixed(2)}MB`,
+      `⏱️ 执行耗时: ${benchmark.lap()}`,
+      '',
+      `🌟 主账号 ${mask(accounts[0].userName)}`,
+      `🎯 今日签到获得 | 个人: ${mainAccountData.personalAdded.toFixed(2)}MB | 家庭: ${mainAccountData.familyAdded.toFixed(2)}MB`,
+      `📊 实际容量增加 | 个人: ${mainAccountData.actualPersonal.toFixed(2)}MB | 家庭: ${mainAccountData.actualFamily.toFixed(2)}MB`,
+      `🏆 今日最终容量 | 个人: ${mainAccountFinalSize.personal}MB | 家庭: ${mainAccountFinalSize.family}MB`,
+      '',
+      '📦 其他账号家庭签到：',
+      ...otherAccounts
     ].join('\n');
 
-    // 构造完整报告（统计信息在最前面）
-    const finalReport = [summary, ...reports].join('\n\n');
+    sendNotify('天翼云签到报告', report);
+    logger.info('\n' + report);
 
-    // 推送完整报告
-    sendNotify('', finalReport);
   } catch (e) {
-    logger.error('致命错误:', e.message);
+    logger.error('执行失败:', e.message);
+    sendNotify('天翼云签到异常', `❌ 运行失败: ${e.message}`);
+    process.exit(1);
   }
 })();
