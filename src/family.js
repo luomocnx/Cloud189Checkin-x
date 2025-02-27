@@ -5,6 +5,7 @@ require('dotenv').config();
 const log4js = require('log4js');
 const { CloudClient } = require('cloud189-sdk');
 const { sendNotify } = require('./sendNotify');
+
 // 新增环境变量处理（在日志配置之前）
 const EXEC_THRESHOLD = parseInt(process.env.EXEC_THRESHOLD || 1); // 默认值为1
 // 日志配置
@@ -37,10 +38,10 @@ function timeout(promise, ms) {
 
 // 核心签到逻辑
 async function stressTest(account, familyId, personalCount = 10, familyCount = 10) {
-  let personalTotal = 0; let
-    familyTotal = 0;
-  let actualPersonal = 0; let
-    actualFamily = 0;
+  let personalTotal = 0;
+  let familyTotal = 0;
+  let actualPersonal = 0;
+  let actualFamily = 0;
   const report = [];
 
   try {
@@ -188,18 +189,40 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
       if (finalSizeInfo) {
         logger.debug(`🏠 最终家庭容量: ${finalSizeInfo.familyCapacityInfo.totalSize} Bytes`);
         const actualFamilyTotal = (finalSizeInfo.familyCapacityInfo.totalSize - initialSizeInfo.familyCapacityInfo.totalSize) / 1024 / 1024;
-        var finalMessage = `📈 实际家庭容量总增加: ${actualFamilyTotal.toFixed(2)}MB\n⏱️ 执行耗时: ${benchmark.lap()}`;
+        // 以下是修改后的推送代码
+        const finalReport = [
+          `🏠 所有家庭签到累计获得: ${totalFamily}MB`,
+          `📈 实际家庭容量总增加: ${actualFamilyTotal?.toFixed(2) || '未知'}MB`,
+          `⏱️ 执行耗时: ${benchmark.lap()}`,
+          '',
+          `🌟 主账号 ${mask(accounts[0].userName)}`,
+          `🎯 今日签到获得 | 个人: ${result?.personalTotal || 0}MB | 家庭: ${result?.familyTotal || 0}MB`,
+          `📊 实际容量增加 | 个人: ${result?.actualPersonal?.toFixed(2) || 0}MB | 家庭: ${result?.actualFamily?.toFixed(2) || 0}MB`,
+          `🏆 今日最终容量 | 个人: ${(finalSizeInfo?.cloudCapacityInfo.totalSize / 1024 / 1024 / 1024).toFixed(2)}GB | 家庭: ${(finalSizeInfo?.familyCapacityInfo.totalSize / 1024 / 1024 / 1024).toFixed(2)}GB`,
+          '',
+          `📦 其他账号家庭签到：`,
+          ...accounts.slice(1).map((acc, i) => {
+            const result = reports[i + 1];
+            return `账号 ${mask(acc.userName)} 家庭获得: ${result?.familyTotal || 0}MB`;
+          }).filter(Boolean)
+        ].join('\n\n');
+
+        sendNotify('天翼云压力测试报告', finalReport);
+        logger.debug(`📊 测试结果:\n${finalReport}`);
       }
     }
 
-    const finalReport = [
-      reports.join('\n\n'),
-      `🏠 所有家庭签到累计获得: ${totalFamily}MB`,
-      finalMessage || '⚠️ 无法计算实际容量变化',
-    ].join('\n\n');
+    // 原有推送代码（已注释）
+    // const finalReport = [
+    //   reports.join('\n\n'),
+    //   `🏠 所有家庭签到累计获得: ${totalFamily}MB`,
+    //   `📈 实际家庭容量总增加: ${actualFamilyTotal?.toFixed(2) || '未知'}MB`,
+    //   `⏱️ 执行耗时: ${benchmark.lap()}`,
+    // ].join('\n\n');
+    // 
+    // sendNotify('天翼云压力测试报告', finalReport);
+    // logger.debug(`📊 测试结果:\n${finalReport}`);
 
-    sendNotify('天翼云压力测试报告', finalReport);
-    logger.debug(`📊 测试结果:\n${finalReport}`);
   } catch (e) {
     logger.error('致命错误:', e.message);
     process.exit(1);
